@@ -37,7 +37,6 @@ public final class StubHttpClient implements IAsyncHttpClient {
 		return new StubHttpClient(servlet);
 	}
 
-	// this piece of error formatting is stolen directly from HttpServerConnection
 	@Override
 	public Promise<HttpResponse> request(HttpRequest request) {
 		Promise<HttpResponse> servletResult;
