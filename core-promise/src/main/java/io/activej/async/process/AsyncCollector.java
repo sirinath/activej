@@ -22,96 +22,107 @@ import io.activej.promise.SettablePromise;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
+import java.util.function.BiConsumer;
+
 import static io.activej.common.Preconditions.checkState;
 
 @SuppressWarnings("UnusedReturnValue")
-public final class AsyncCollector<R> implements AsyncCloseable {
-	@FunctionalInterface
-	public interface Accumulator<R, T> {
-		void accumulate(R result, T value) throws UncheckedException;
-	}
-
-	private final SettablePromise<R> resultPromise = new SettablePromise<>();
+public final class AsyncCollector<A> implements AsyncCloseable {
+	private final SettablePromise<A> resultPromise = new SettablePromise<>();
 	private boolean started;
 
 	@Nullable
-	private R result;
+	private A accumulator;
 
 	private int activePromises;
 
-	public AsyncCollector(@Nullable R initialResult) {
-		this.result = initialResult;
+	private AsyncCollector(@Nullable A accumulator) {
+		this.accumulator = accumulator;
 	}
 
-	public static <R> AsyncCollector<R> create(@Nullable R initialResult) {
-		return new AsyncCollector<>(initialResult);
+	public static <A> AsyncCollector<A> create(@Nullable A accumulator) {
+		return new AsyncCollector<>(accumulator);
 	}
 
-	public <T> AsyncCollector<R> withPromise(@NotNull Promise<T> promise, @NotNull Accumulator<R, T> accumulator) {
+	public <T> AsyncCollector<A> withPromise(@NotNull Promise<T> promise, @NotNull BiConsumer<A, T> accumulator) {
 		addPromise(promise, accumulator);
 		return this;
 	}
 
-	public AsyncCollector<R> run() {
+	public Promise<A> run() {
 		checkState(!started);
 		this.started = true;
 		if (activePromises == 0 && !resultPromise.isComplete()) {
-			resultPromise.set(result);
-			result = null;
+			resultPromise.set(accumulator);
+			accumulator = null;
 		}
-		return this;
+		return get();
 	}
 
-	public AsyncCollector<R> run(@NotNull Promise<Void> runtimePromise) {
-		withPromise(runtimePromise, (result, v) -> {});
+	public Promise<A> run(@NotNull Promise<Void> runtimePromise) {
+		addPromise(runtimePromise, (result, v) -> {});
 		return run();
 	}
 
 	@SuppressWarnings("unchecked")
-	public <T> Promise<T> addPromise(@NotNull Promise<T> promise, @NotNull Accumulator<R, T> accumulator) {
+	public <T> Promise<T> addPromise(@NotNull Promise<T> promise, @NotNull BiConsumer<A, T> consumer) {
 		if (resultPromise.isException()) return (Promise<T>) resultPromise;
-		checkState(!resultPromise.isComplete());
 		activePromises++;
 		return promise.whenComplete((v, e) -> {
 			activePromises--;
 			if (resultPromise.isComplete()) return;
 			if (e == null) {
 				try {
-					accumulator.accumulate(result, v);
+					consumer.accept(accumulator, v);
 				} catch (UncheckedException u) {
 					resultPromise.setException(u.getCause());
-					result = null;
+					accumulator = null;
 					return;
 				}
 				if (activePromises == 0 && started) {
-					resultPromise.set(result);
+					resultPromise.set(accumulator);
+					accumulator = null;
 				}
 			} else {
 				resultPromise.setException(e);
-				result = null;
+				accumulator = null;
 			}
 		});
 	}
 
-	public <V> SettablePromise<V> newPromise(@NotNull Accumulator<R, V> accumulator) {
+	public <V> SettablePromise<V> newPromise(@NotNull BiConsumer<A, V> consumer) {
 		SettablePromise<V> resultPromise = new SettablePromise<>();
-		addPromise(resultPromise, accumulator);
+		addPromise(resultPromise, consumer);
 		return resultPromise;
 	}
 
 	@NotNull
-	public Promise<R> get() {
+	public Promise<A> get() {
 		return resultPromise;
+	}
+
+	@Nullable
+	public A getAccumulator() {
+		return accumulator;
 	}
 
 	public int getActivePromises() {
 		return activePromises;
 	}
 
+	public void complete() {
+		resultPromise.trySet(accumulator);
+		accumulator = null;
+	}
+
+	public void complete(A result) {
+		resultPromise.trySet(result);
+		accumulator = null;
+	}
+
 	@Override
 	public void closeEx(@NotNull Throwable e) {
-		if (resultPromise.trySetException(e)) {
-			result = null;
-		}
+		resultPromise.trySetException(e);
+		accumulator = null;
 	}
 }
